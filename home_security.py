@@ -21,7 +21,7 @@ MULTI_PERSON_ALERT   = True       # alert when 2+ people detected at once
 MIN_CONFIDENCE       = 0.55       # ignore detections below this confidence
 SAVE_SNAPSHOTS       = False       # snapshot saving disabled; photos are sent via Telegram only
 SNAPSHOT_DIR         = "snapshots"
-LOG_FILE             = "detections.log"
+LOG_FILE             = None  # File logging disabled
 ENABLE_ZONE          = False      # only alert when person is inside the zone below
 ALERT_ZONE           = (100, 100, 540, 380)   # (x1, y1, x2, y2) in pixels
 # ============================================================
@@ -32,8 +32,10 @@ def log(msg):
     ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     line = f"[{ts}] {msg}"
     print(line, flush=True)
-    with open(LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(line + "\n")
+    # Write to file only when LOG_FILE is set (not None)
+    if LOG_FILE:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
 
 def stamp_frame(frame, label=""):
     """Burn timestamp + optional label onto a copy of the frame."""
