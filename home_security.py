@@ -19,7 +19,7 @@ COOLDOWN_SEC         = 60         # gap between photo bursts (1 min)
 SUSTAINED_MIN        = 3          # minutes before "still here" alert fires
 MULTI_PERSON_ALERT   = True       # alert when 2+ people detected at once
 MIN_CONFIDENCE       = 0.55       # ignore detections below this confidence
-SAVE_SNAPSHOTS       = True       # also save captured frames to disk
+SAVE_SNAPSHOTS       = False       # snapshot saving disabled; photos are sent via Telegram only
 SNAPSHOT_DIR         = "snapshots"
 LOG_FILE             = "detections.log"
 ENABLE_ZONE          = False      # only alert when person is inside the zone below
@@ -107,7 +107,7 @@ def save_snapshot(frame, tag=""):
     path = os.path.join(SNAPSHOT_DIR, f"{ts}_{tag}.jpg")
     cv2.imwrite(path, frame)
 
-def capture_burst(cap, base_frame, n=3):
+def capture_burst(cap, base_frame, n=2):
     """Return base_frame + (n-1) freshly captured frames."""
     frames = [base_frame.copy()]
     for _ in range(n - 1):
@@ -170,7 +170,7 @@ def main():
     log("Loading YOLOv8 model…")
     model = YOLO("yolov8n.pt")
 
-    cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
     if not cap.isOpened():
         log("ERROR: Could not open camera.")
         return
@@ -178,14 +178,17 @@ def main():
     log("Monitoring started. Press ESC to quit.")
 
     last_alert_time     = 0          # 0 = never alerted (used to detect first detection)
+    no_person_since = None  # timestamp when no person detected continuously
     person_first_seen   = None       # timestamp when continuous presence began
     last_person_count   = 0          # for multi-person tracking
 
     while True:
         ret, frame = cap.read()
         if not ret:
-            log("Camera read failed — retrying…")
+            log("Camera read failed — attempting reconnection…")
+            cap.release()
             time.sleep(0.5)
+            cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
             continue
 
         # ── night detection ──────────────────────────────────
@@ -216,40 +219,40 @@ def main():
         if person_count > 0:
             if person_first_seen is None:
                 person_first_seen = now
+            no_person_since = None
         else:
-            person_first_seen = None
-            last_alert_time   = 0    # reset so next entry triggers double-vibrate again
+            # No person detected in this frame
+            if no_person_since is None:
+                no_person_since = now
+            elif now - no_person_since >= 2:
+                # Person has been absent for >=2 seconds, reset session state
+                person_first_seen = None
+                last_alert_time = 0
+                no_person_since = None
+                log("Person absent for 2 seconds, session reset")
 
         # ── photo burst every 60 seconds while person is present ─
         if person_count > 0 and (now - last_alert_time) >= COOLDOWN_SEC:
-
-            is_first = (last_alert_time == 0)          # very first detection
+            # Determine if this is the first alert of the session
+            is_first = (last_alert_time == 0)
             label_base = "INTRUDER DETECTED"
             if night_mode:
                 label_base += " (low-light)"
 
-            if person_count > 1 and MULTI_PERSON_ALERT:
-                burst_num = int((now - person_first_seen) / COOLDOWN_SEC) + 1
-                msg = (f"MULTIPLE PEOPLE — {person_count} persons | "
-                       f"Burst #{burst_num}")
-                daily_stats["multi_person_events"] += 1
-            else:
-                burst_num = int((now - person_first_seen) / COOLDOWN_SEC) + 1
-                msg = (f"INTRUDER ALERT | Burst #{burst_num} | "
-                       f"{datetime.datetime.now().strftime('%H:%M:%S')}")
-
+            # Use burst number based on elapsed time since first seen
+            burst_num = int((now - person_first_seen) / COOLDOWN_SEC) + 1
+            msg = f"{label_base} | Burst #{burst_num} | {datetime.datetime.now().strftime('%H:%M:%S')}"
             log(msg)
             daily_stats["detections"] += 1
 
-            burst   = capture_burst(cap, frame)
-            stamped = [stamp_frame(draw_boxes(f, results, model),
-                                   f"Burst #{burst_num}") for f in burst]
+            # Capture exactly 2 frames (base + one extra)
+            burst = capture_burst(cap, frame, n=2)
+            stamped = [stamp_frame(draw_boxes(f, results, model), f"Burst #{burst_num}") for f in burst]
             for f in stamped:
                 save_snapshot(f, f"burst{burst_num}")
 
-            # Double-vibrate only on the FIRST detection; subsequent bursts
-            # send a single notification + 3 photos
-            alert_async(stamped, msg, caption=msg, vibrate=is_first)
+            # Send alert (vibrate on first detection only)
+            alert_async(stamped, msg, caption=msg, vibrate=False)
             last_alert_time = now
 
         # ── daily summary check ───────────────────────────────
